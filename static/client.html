@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>WebRTC Multi-Client Audio Chat</title>
+    <style>
+        #chat {
+            width: 300px;
+            height: 400px;
+            border: 1px solid #ccc;
+            overflow-y: scroll;
+            margin-top: 20px;
+        }
+        #messageInput {
+            width: 240px;
+        }
+    </style>
+</head>
+<body>
+    <h1>WebRTC Multi-Client Audio Chat Room</h1>
+    <button id="startButton">Start Chat</button>
+    <div id="chat"></div>
+    <input type="text" id="messageInput" placeholder="Type a message">
+    <button id="sendButton">Send</button>
+    <script>
+        const startButton = document.getElementById('startButton');
+        const sendButton = document.getElementById('sendButton');
+        const messageInput = document.getElementById('messageInput');
+        const chat = document.getElementById('chat');
+        let localStream;
+        const peerConnections = {};
+        const signalingServerUrl = 'ws://192.168.1.189:8080/ws'; // Use the server's IP address
+        const clientId = Math.random().toString(36).substring(2); // Generate a unique client ID
+        let signalingSocket;
+
+        function connectWebSocket() {
+            signalingSocket = new WebSocket(signalingServerUrl);
+
+            signalingSocket.onopen = () => {
+                console.log('WebSocket connection established');
+            };
+
+            signalingSocket.onclose = (event) => {
+                console.log('WebSocket connection closed:', event);
+                // Optionally, attempt to reconnect
+                setTimeout(connectWebSocket, 1000);
+            };
+
+            signalingSocket.onerror = (error) => {
+                console.error('WebSocket error:', error);
+            };
+
+            signalingSocket.onmessage = async (message) => {
+                const data = JSON.parse(message.data);
+
+                if (data.offer) {
+                    const peerConnection = new RTCPeerConnection();
+                    peerConnections[data.sender] = peerConnection;
+
+                    localStream.getTracks().forEach(track => {
+                        peerConnection.addTrack(track, localStream);
+                    });
+
+                    peerConnection.onicecandidate = event => {
+                        if (event.candidate) {
+                            signalingSocket.send(JSON.stringify({ candidate: event.candidate, sender: clientId }));
+                        }
+                    };
+
+                    peerConnection.ontrack = event => {
+                        const remoteAudio = document.createElement('audio');
+                        remoteAudio.srcObject = event.streams[0];
+                        remoteAudio.autoplay = true;
+                        remoteAudio.controls = true; // Add controls for debugging
+                        document.body.appendChild(remoteAudio);
+                    };
+
+                    await peerConnection.setRemoteDescription(new RTCSessionDescription(data.offer));
+                    const answer = await peerConnection.createAnswer();
+                    await peerConnection.setLocalDescription(answer);
+                    signalingSocket.send(JSON.stringify({ answer, sender: clientId }));
+                } else if (data.answer) {
+                    const peerConnection = peerConnections[data.sender];
+                    await peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
+                } else if (data.candidate) {
+                    const peerConnection = peerConnections[data.sender];
+                    await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
+                } else if (data.message) {
+                    const messageElement = document.createElement('div');
+                    messageElement.textContent = data.sender + ': ' + data.message;
+                    chat.appendChild(messageElement);
+                    chat.scrollTop = chat.scrollHeight;
+                }
+            };
+        }
+
+        startButton.onclick = async () => {
+            try {
+                localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                console.log('Microphone access granted');
+            } catch (error) {
+                console.error('Error accessing media devices.', error);
+                return;
+            }
+
+            connectWebSocket();
+        };
+
+        sendButton.onclick = () => {
+            const message = messageInput.value;
+            if (message) {
+                signalingSocket.send(JSON.stringify({ message, sender: clientId }));
+                messageInput.value = '';
+            }
+        };
+    </script>
+</body>
+</html>
